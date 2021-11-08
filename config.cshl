@@ -1,0 +1,12 @@
+set prompt [%s]:%s>    
+alias ls "ls --color=auto"
+
+# says 'hey' before everything else you put.
+function hey()
+    echo hey, $~all
+end
+
+# says the first and second arguments as if it were a name
+function name()
+    echo Your name is $~0 $~1
+end
