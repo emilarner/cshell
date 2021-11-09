@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 
+#include <glob.h>
 #include <dirent.h>
 
 #include <unistd.h>
@@ -22,16 +23,18 @@
 #include "slist.h"
 
 
-static const char *forbidden_functions[] = {
-    ""
-};
-
 /* Macro is required for deleting allocated memory and generally making life easier. */
 #define die(msg) do {       \
     fprintf(stderr, msg);   \
     slist_free(words);      \
     return;                 \
  } while (0)                \
+
+
+#define peace() do {        \
+    slist_free(words);      \
+    return;                 \
+} while(0)                  \
 
 
 struct interpreter
@@ -46,6 +49,8 @@ struct interpreter
     GHashTable *aliases;
 
     slist *temp_envs;
+    slist *temp_envs_prev;
+
     bool async; 
 
     bool if_on;
@@ -57,21 +62,8 @@ struct interpreter
     int status;
 };
 
-enum EntityTypes
-{
-    Text,
-    Array
-};
-
-struct entity
-{
-    enum EntityTypes type;
-    void *data;
-};
-
 
 slist *resolve_variables(struct interpreter *i, char *source);
-char *wildcards(char *line);
 
 void set_var(struct interpreter *i, char *key, char *value);
 char *get_var(struct interpreter *i, char *key);
@@ -81,7 +73,5 @@ void interpreter_free(struct interpreter *i);
 
 void parse_line(struct interpreter *i, char *line, bool segment);
 bool test_expressions(struct interpreter *in, char *line);
-
-struct entity *identify(char *text);
 
 #endif

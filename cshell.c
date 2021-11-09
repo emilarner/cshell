@@ -3,13 +3,6 @@
 
 #include "cshell.h"
 
-struct entity *identify(char *text)
-{
-    struct entity *result = (struct entity*) malloc(sizeof(struct entity));
-
-
-}
-
 /* Set a variable (redundant) */
 void set_var(struct interpreter *i, char *key, char *value)
 {
@@ -44,55 +37,15 @@ slist *resolve_variables(struct interpreter *in, char *source)
 
         if (strchr(s->data[i], '*') != NULL)
         {
-            char path[256];
-            memset(path, 0, sizeof(path));
+            char *path = s->data[i];
 
-            ptrdiff_t pathlen = strchr(s->data[i], '*') - s->data[i];
+            glob_t files;
+            glob(path, GLOB_PERIOD | GLOB_TILDE | GLOB_NOCHECK, NULL, &files);
 
+            for (size_t i = 0; i < files.gl_pathc; i++)
+                slist_push(result, files.gl_pathv[i]);
 
-            if (!pathlen)
-                strcpy(path, "./");
-            else
-            {
-                if (memcpy_s(path, s->data[i], strchr(s->data[i], '*') - s->data[i], sizeof(path)) == NULL)
-                    continue;
-            }
-
-            /* buffer overflow ^^^ */
-
-            //for (int i = 0; i < strlen(path); i++)
-            //    printf("BYTE: 0x%08x\n", path[i]);
-
-
-            char *card = strchr(s->data[i], '*') + 1;
-
-
-
-            DIR *d = opendir(path);
-
-            if (!d)
-            {
-                fprintf(stderr, "Error opening %s\n", path);
-                continue;
-            }
-
-            struct dirent *dr;
-
-            char fulldir[512];
-
-            while ((dr = readdir(d)) != NULL)
-            {
-                if (strstr(dr->d_name, card) != NULL)
-                {
-                    strncpy(fulldir, path, sizeof(fulldir));
-                    //strncat(fulldir, "/", sizeof(fulldir));
-                    strncat(fulldir, dr->d_name, sizeof(fulldir));
-
-                    slist_push(result, fulldir);
-                }
-            }
-
-            closedir(d);
+            globfree(&files);
         }
 
         else if (memequ(s->data[i], "~/", 2))
@@ -159,18 +112,6 @@ slist *resolve_variables(struct interpreter *in, char *source)
     return result;
 }
 
-/* Parse wildcards? */
-char *wildcards(char *line)
-{
-    char *result = (char*) malloc(512);
-    size_t result_length = 0;
-
-    for (char *asterisk = strchr(line, '*'); asterisk != NULL; asterisk = strchr(asterisk + 1, '*'))
-    {
-
-    }
-}
-
 /* Initialize the interpreter structure, allocating the many resources it comes with! */
 struct interpreter *interpreter_init(char **envp)
 {
@@ -196,8 +137,11 @@ struct interpreter *interpreter_init(char **envp)
     i->functions = g_hash_table_new(g_str_hash, g_str_equal);
 
     i->function = NULL;
-
     i->status = 0;
+
+    i->temp_envs = NULL;
+    i->temp_envs_prev = NULL;
+    
     return i;
 }
 
@@ -208,34 +152,9 @@ void interpreter_free(struct interpreter *i)
     g_hash_table_destroy(i->aliases);
     g_hash_table_destroy(i->functions);
 
+    //slist_free(i->temp_envs);
+
     free(i);
-}
-
-bool test_expressions(struct interpreter *in, char *line)
-{
-    bool inversion = false;
-    bool result = false;
-
-    if (line[0] == '!')
-    {
-        inversion = true;
-        line++;
-    }
-
-    if (startswith(line, "file"))
-    {
-
-    }
-    else if (startswith(line, "directory"))
-    {
-
-    }
-
-
-    if (inversion)
-        return !result;
-
-    return result;
 }
 
 /* Parse a line of code. */
@@ -276,8 +195,14 @@ void parse_line(struct interpreter *in, char *line, bool segment)
         /* If the if-statement failed, don't run the code--unless we're ending the if-block or doing else. */
         if (!in->if_condition) 
         {
-            if (!strequ(keyword, "fi") && !strequ(keyword, "else"))
+            if (!strequ(keyword, "end") && !strequ(keyword, "else"))
                 return;
+
+            if (strequ(keyword, "end"))
+            {
+                in->if_on = false;
+                in->else_on = false;
+            }
         }
             
     }
@@ -285,8 +210,14 @@ void parse_line(struct interpreter *in, char *line, bool segment)
 
     if (in->else_on)
     {
-        if (!in->else_on && !strequ(keyword, "fi"))
+        if (!in->else_on && !strequ(keyword, "end"))
             return;
+
+        if (strequ(keyword, "end"))
+        {
+            in->if_on = false;
+            in->else_on = false;
+        }
     }
 
 
@@ -434,33 +365,42 @@ void parse_line(struct interpreter *in, char *line, bool segment)
         in->if_on = false; 
     }
 
-    /* End such a conditional statement! */
-    else if (strequ(keyword, "fi"))
-    {
-        if (!in->if_on)
-            die("There was no initial if-statement!");
-
-        in->if_on = false; 
-        in->else_on = false;
-    }
-
     /* and operator, on the basis of a zero-status code */
     else if (strchr(line, '&'))
     {
         char first[256];
-        memcpy_s(first, line, strchr(line, '&') - line, sizeof(first));
+        if (memcpy_s(first, line, strchr(line, '&') - line, sizeof(first)) == NULL)
+            die("mem error");
 
         parse_line(in, first, true);
+
+        /* well we didn't get a status code of true so do not execute the subsequent commands. */
         if (in->status != 0)
-            return;
+            peace();
         
         parse_line(in, strchr(line, '&') + 1, true);
     }
 
     /* Temporary environment variable parsing! */ 
-    else if (strin(keyword, "="))
+    else if (strchr(keyword, '=') != NULL)
     {
+        char *value = strchr(keyword, '=') + 1;
+        char varname[256];
+        if (memcpy_s(varname, keyword, strchr(keyword, '=') - keyword, sizeof(varname)) == NULL)
+            die("mem error");
 
+        if (in->temp_envs == NULL)
+        {
+            in->temp_envs = slist_init();
+            in->temp_envs_prev = slist_init();
+        }
+
+        slist_push(in->temp_envs, varname);
+        slist_push(in->temp_envs_prev, getenv(varname));
+        setenv(varname, value, true);
+
+        parse_line(in, strip(strip(line, keyword), " "), true);
+        peace();
     }
 
     else if (strequ(keyword, "function"))
@@ -489,10 +429,35 @@ void parse_line(struct interpreter *in, char *line, bool segment)
 
     }
 
+    /* Multiple statements on one line function/operator. */
+    else if (strchr(line, ';'))
+    {
+        slist *statements = split(line, ";", '"');
+
+        for (size_t i = 0; i < statements->length; i++)
+            parse_line(in, statements->data[i], true);
+
+
+        slist_free(statements);
+        peace();
+    }
+
+    /* Piping. */
+    else if (strchr(line, '|'))
+    {
+        char *after = strchr(line, '|') + 1; 
+        char before[512];
+
+        if (memcpy_s(before, line, strchr(line, '|') - line, sizeof(before)) == NULL)
+            die("mem error");
+
+
+    }
+
     /* We are calling a function. */
     else if (g_hash_table_contains(in->functions, keyword))
     {
-        char varname[6];
+        char varname[32];
 
         /* Set up arguments. */
         for (size_t i = 1; i < words->length; i++)
@@ -520,7 +485,8 @@ void parse_line(struct interpreter *in, char *line, bool segment)
     else if (strchr(line, '>') != NULL)
     {
         char before[256];
-        memcpy_s(before, line, strchr(line, '>') - line, sizeof(before));
+        if (memcpy_s(before, line, strchr(line, '>') - line, sizeof(before)) == NULL)
+            die("mem error");
 
         char *filename = strchr(line, '>')+1;
 
@@ -546,7 +512,8 @@ void parse_line(struct interpreter *in, char *line, bool segment)
     else if (strchr(line, '<') != NULL)
     {
         char before[1024];
-        memcpy_s(before, line, strchr(line, '<') - line, sizeof(before));
+        if (memcpy_s(before, line, strchr(line, '<') - line, sizeof(before)) == NULL)
+            die("mem error");
 
         char *filename = strchr(line, '<') + 1;
         FILE *fp = fopen(filename, "rb");
@@ -607,6 +574,23 @@ void parse_line(struct interpreter *in, char *line, bool segment)
                 set_var(in, "~code", strdup(status_code));
                 in->status = WEXITSTATUS(status);
             }
+        }
+
+
+        /* Reset the environment variables back to normal. In general, I did this very lazily. */
+        if (in->temp_envs != NULL)
+        {
+            /* Reset environment variables to previous values */
+            for (size_t i = 0; i < in->temp_envs_prev->length; i++)
+                setenv(in->temp_envs->data[i], 
+                    in->temp_envs_prev->data[i] == NULL 
+                    ? "(null)" : in->temp_envs_prev->data[i], true);
+
+            slist_free(in->temp_envs);
+            slist_free(in->temp_envs_prev);
+
+            in->temp_envs = NULL;
+            in->temp_envs_prev = NULL;
         }
 
         /* Reset the program back to the norm. */

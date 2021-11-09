@@ -79,7 +79,7 @@ void slist_push(slist *s, char *string)
         s->data = (char**) realloc(s->data, s->capacity * sizeof(char*));
     }
 
-    s->data[s->length] = strdup(string);
+    s->data[s->length] = string == NULL ? NULL : strdup(string);
     s->length++; 
 }
 
